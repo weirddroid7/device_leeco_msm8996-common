@@ -15,13 +15,11 @@
 //
 
 cc_library_static {
-    name: "libinit_leeco_msm8996",
+    name: "libinit.xiaomi_8996",
     recovery_available: true,
-    srcs: ["init_leeco_msm8996.cpp"],
+    srcs: ["init_msm8996.cpp"],
     include_dirs: [
         "system/core/base/include",
-        "system/core/init",
-        "external/selinux/libselinux/include",
-        "external/libcap/libcap/include"
+        "system/core/init"
     ]
 }

@@ -30,7 +30,7 @@
 #ifndef __QCAMERA_CHANNEL_H__
 #define __QCAMERA_CHANNEL_H__
 
-#include "camera.h"
+#include "hardware/camera.h"
 #include "QCameraMem.h"
 #include "QCameraParameters.h"
 #include "QCameraStream.h"
@@ -84,6 +84,7 @@ protected:
     Vector<QCameraStream *> mStreams;
     mm_camera_buf_notify_t mDataCB;
     void *mUserData;
+    Mutex mStreamLock;
 };
 
 // burst pic channel: i.e. zsl burst mode

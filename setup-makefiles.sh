@@ -7,7 +7,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-# http://www.apache.org/licenses/LICENSE-2.0
+#      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,14 +18,13 @@
 
 set -e
 
-INITIAL_COPYRIGHT_YEAR=2016
+INITIAL_COPYRIGHT_YEAR=2017
 
-# Load extractutils and do some sanity checks
-MY_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd)
+# Load extract_utils and do some sanity checks
+MY_DIR="${BASH_SOURCE%/*}"
 if [[ ! -d "${MY_DIR}" ]]; then MY_DIR="${PWD}"; fi
 
 LINEAGE_ROOT="${MY_DIR}/../../.."
-CLEANUP="$1"
 
 HELPER="${LINEAGE_ROOT}/vendor/lineage/build/tools/extract_utils.sh"
 if [ ! -f "${HELPER}" ]; then
@@ -35,46 +34,28 @@ fi
 source "${HELPER}"
 
 # Initialize the helper for common
-setup_vendor "${DEVICE_COMMON}" "${VENDOR}" "${LINEAGE_ROOT}" "true" "${CLEANUP}"
+setup_vendor "${DEVICE_COMMON}" "${VENDOR}" "${LINEAGE_ROOT}" true
 
 # Copyright headers and guards
-write_headers "zl1 x2"
+write_headers "capricorn gemini lithium natrium scorpio"
 
-# The standard msm8996-common blobs
+# The standard common blobs
 write_makefiles "${MY_DIR}/proprietary-files.txt" true
 
-if [ -f "${MY_DIR}/proprietary-files-twrp.txt" ]; then
-	cat >> "${BOARDMK}" <<-EOF
-		ifeq (\$(WITH_TWRP),true)
-		TARGET_RECOVERY_DEVICE_DIRS += vendor/${VENDOR}/${DEVICE_COMMON}/proprietary
-		endif
-	EOF
-fi
-
-# We are done!
+# Finish
 write_footers
 
-# Reinitialize the helper for msm8996-common/${device}
-(
-	INITIAL_COPYRIGHT_YEAR="${DEVICE_BRINGUP_YEAR}"
-	setup_vendor "${DEVICE}" "${VENDOR}" "${LINEAGE_ROOT}" false "${CLEANUP}"
+if [ -s "${MY_DIR}/../${DEVICE}/proprietary-files.txt" ]; then
+    # Reinitialize the helper for device
+    INITIAL_COPYRIGHT_YEAR="$DEVICE_BRINGUP_YEAR"
+    setup_vendor "${DEVICE}" "${VENDOR}" "${LINEAGE_ROOT}" false
 
-	# Copyright headers and guards
-	write_headers
+    # Copyright headers and guards
+    write_headers
 
-	# $1: The device-specific blobs
-	# $2: Make treble compatible paths and put "$(TARGET_COPY_OUT_VENDOR)"
-	#     in generated makefiles
-	write_makefiles "${MY_DIR}/../${DEVICE}/proprietary-files.txt" true
+    # The standard device blobs
+    write_makefiles "${MY_DIR}/../${DEVICE}/proprietary-files.txt" true
 
-	if [ -f "${MY_DIR}/../${DEVICE}/proprietary-files-twrp.txt" ]; then
-		cat >> "${BOARDMK}" <<-EOF
-			ifeq (\$(WITH_TWRP),true)
-			TARGET_RECOVERY_DEVICE_DIRS += vendor/${VENDOR}/${DEVICE_COMMON}/${DEVICE}/proprietary
-			endif
-		EOF
-	fi
-
-	# We are done!
-	write_footers
-)
+    # Finish
+    write_footers
+fi

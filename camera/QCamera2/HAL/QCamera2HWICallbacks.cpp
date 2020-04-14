@@ -692,7 +692,6 @@ void QCamera2HardwareInterface::synchronous_stream_cb_routine(
     ATRACE_CALL();
     LOGH("[KPI Perf] : BEGIN");
     QCamera2HardwareInterface *pme = (QCamera2HardwareInterface *)userdata;
-    QCameraGrallocMemory *memory = NULL;
 
     if (pme == NULL) {
         LOGE("Invalid hardware object");
@@ -718,19 +717,29 @@ void QCamera2HardwareInterface::synchronous_stream_cb_routine(
         pme->m_bPreviewStarted = false;
     }
 
+    QCameraGrallocMemory *memory = (QCameraGrallocMemory *) frame->mem_info;
     if (!pme->needProcessPreviewFrame(frame->frame_idx)) {
         pthread_mutex_lock(&pme->mGrallocLock);
         pme->mLastPreviewFrameID = frame->frame_idx;
+        memory->setBufferStatus(frame->buf_idx, STATUS_SKIPPED);
         pthread_mutex_unlock(&pme->mGrallocLock);
         LOGH("preview is not running, no need to process");
         return;
     }
 
+    if (pme->needDebugFps()) {
+        pme->debugShowPreviewFPS();
+    }
+
     frameTime = nsecs_t(frame->ts.tv_sec) * 1000000000LL + frame->ts.tv_nsec;
+    // Convert Boottime from camera to Monotime for display if needed.
+    // Otherwise, mBootToMonoTimestampOffset value will be 0.
+    frameTime = frameTime - pme->mBootToMonoTimestampOffset;
     // Calculate the future presentation time stamp for displaying frames at regular interval
-    mPreviewTimestamp = pme->mCameraDisplay.computePresentationTimeStamp(frameTime);
+    /*if (pme->getRecordingHintValue() == true) {
+        mPreviewTimestamp = pme->mCameraDisplay.computePresentationTimeStamp(frameTime);
+    }*/
     stream->mStreamTimestamp = frameTime;
-    memory = (QCameraGrallocMemory *)super_frame->bufs[0]->mem_info;
 
 #ifdef TARGET_TS_MAKEUP
     pme->TsMakeupProcess_Preview(frame,stream);
@@ -741,7 +750,6 @@ void QCamera2HardwareInterface::synchronous_stream_cb_routine(
     LOGD("%p Enqueue Buffer to display %d frame Time = %lld Display Time = %lld",
             pme, idx, frameTime, mPreviewTimestamp);
     err = memory->enqueueBuffer(idx, mPreviewTimestamp);
-
     if (err == NO_ERROR) {
         pthread_mutex_lock(&pme->mGrallocLock);
         pme->mLastPreviewFrameID = frame->frame_idx;
@@ -814,23 +822,21 @@ void QCamera2HardwareInterface::preview_stream_cb_routine(mm_camera_super_buf_t 
     if (!stream->isSyncCBEnabled()) {
         pme->mLastPreviewFrameID = frame->frame_idx;
     }
-    if (((!stream->isSyncCBEnabled()) &&
-            (!pme->needProcessPreviewFrame(frame->frame_idx))) ||
-            ((stream->isSyncCBEnabled()) &&
-            (memory->isBufOwnedByCamera(frame->buf_idx)))) {
-        //If buffer owned by camera, then it is not enqueued to display.
-        // bufDone it back to backend.
-        pthread_mutex_unlock(&pme->mGrallocLock);
+    bool discardFrame = false;
+    if (!stream->isSyncCBEnabled() &&
+            !pme->needProcessPreviewFrame(frame->frame_idx))
+    {
+        discardFrame = true;
+    } else if (stream->isSyncCBEnabled() &&
+            memory->isBufSkipped(frame->buf_idx)) {
+        discardFrame = true;
+        memory->setBufferStatus(frame->buf_idx, STATUS_IDLE);
+    }
+    pthread_mutex_unlock(&pme->mGrallocLock);
+
+    if (discardFrame) {
         LOGH("preview is not running, no need to process");
         stream->bufDone(frame->buf_idx);
-        free(super_frame);
-        return;
-    } else {
-        pthread_mutex_unlock(&pme->mGrallocLock);
-    }
-
-    if (pme->needDebugFps()) {
-        pme->debugShowPreviewFPS();
     }
 
     uint32_t idx = frame->buf_idx;
@@ -842,7 +848,12 @@ void QCamera2HardwareInterface::preview_stream_cb_routine(mm_camera_super_buf_t 
        pme->m_bPreviewStarted = false ;
     }
 
-    if (!stream->isSyncCBEnabled()) {
+    if (!stream->isSyncCBEnabled() && !discardFrame) {
+
+        if (pme->needDebugFps()) {
+            pme->debugShowPreviewFPS();
+        }
+
         LOGD("Enqueue Buffer to display %d", idx);
 #ifdef TARGET_TS_MAKEUP
         pme->TsMakeupProcess_Preview(frame,stream);
@@ -863,12 +874,12 @@ void QCamera2HardwareInterface::preview_stream_cb_routine(mm_camera_super_buf_t 
         pthread_mutex_unlock(&pme->mGrallocLock);
     }
 
-    // Display the buffer.
-    LOGD("%p displayBuffer %d E", pme, idx);
     uint8_t numMapped = memory->getMappable();
+    LOGD("EnqueuedCnt %d numMapped %d", dequeueCnt, numMapped);
 
     for (uint8_t i = 0; i < dequeueCnt; i++) {
         int dequeuedIdx = memory->dequeueBuffer();
+        LOGD("dequeuedIdx %d numMapped %d Loop running for %d", dequeuedIdx, numMapped, i);
         if (dequeuedIdx < 0 || dequeuedIdx >= memory->getCnt()) {
             LOGE("Invalid dequeued buffer index %d from display",
                    dequeuedIdx);
@@ -891,7 +902,8 @@ void QCamera2HardwareInterface::preview_stream_cb_routine(mm_camera_super_buf_t 
                 }
             }
         }
-
+        // Get the updated mappable buffer count since it's modified in dequeueBuffer()
+        numMapped = memory->getMappable();
         if (err < 0) {
             LOGE("buffer mapping failed %d", err);
         } else {
@@ -905,7 +917,7 @@ void QCamera2HardwareInterface::preview_stream_cb_routine(mm_camera_super_buf_t 
 
     // Handle preview data callback
     if (pme->m_channels[QCAMERA_CH_TYPE_CALLBACK] == NULL) {
-        if (pme->needSendPreviewCallback() &&
+        if (pme->needSendPreviewCallback() && !discardFrame &&
                 (!pme->mParameters.isSceneSelectionEnabled())) {
             int32_t rc = pme->sendPreviewCallback(stream, memory, idx);
             if (NO_ERROR != rc) {
@@ -1555,6 +1567,11 @@ void QCamera2HardwareInterface::video_stream_cb_routine(mm_camera_super_buf_t *s
             cbArg.cb_type = QCAMERA_DATA_TIMESTAMP_CALLBACK;
             cbArg.msg_type = CAMERA_MSG_VIDEO_FRAME;
             cbArg.data = video_mem;
+
+            // Convert Boottime from camera to Monotime for video if needed.
+            // Otherwise, mBootToMonoTimestampOffset value will be 0.
+            timeStamp = timeStamp - pme->mBootToMonoTimestampOffset;
+            LOGD("Final video buffer TimeStamp : %lld ", timeStamp);
             cbArg.timestamp = timeStamp;
             int32_t rc = pme->m_cbNotifier.notifyCallback(cbArg);
             if (rc != NO_ERROR) {
@@ -2781,14 +2798,14 @@ void QCamera2HardwareInterface::dumpFrameToFile(QCameraStream *stream,
                     switch (dump_type) {
                     case QCAMERA_DUMP_FRM_PREVIEW:
                         {
-                            snprintf(buf, sizeof(buf), "%dp_%dx%d_%d.yuv",
-                                    dumpFrmCnt, dim.width, dim.height, frame->frame_idx);
+                            snprintf(buf, sizeof(buf), "%dp_%dx%d_%d_%d.yuv",
+                                    dumpFrmCnt, dim.width, dim.height, frame->frame_idx, mCameraId);
                         }
                         break;
                     case QCAMERA_DUMP_FRM_THUMBNAIL:
                         {
-                            snprintf(buf, sizeof(buf), "%dt_%dx%d_%d.yuv",
-                                    dumpFrmCnt, dim.width, dim.height, frame->frame_idx);
+                            snprintf(buf, sizeof(buf), "%dt_%dx%d_%d_%d.yuv",
+                                    dumpFrmCnt, dim.width, dim.height, frame->frame_idx, mCameraId);
                         }
                         break;
                     case QCAMERA_DUMP_FRM_SNAPSHOT:
@@ -2799,11 +2816,13 @@ void QCamera2HardwareInterface::dumpFrameToFile(QCameraStream *stream,
                                 stream->getFrameDimension(dim);
                             }
                             if (misc != NULL) {
-                                snprintf(buf, sizeof(buf), "%ds_%dx%d_%d_%s.yuv",
-                                        dumpFrmCnt, dim.width, dim.height, frame->frame_idx, misc);
+                                snprintf(buf, sizeof(buf), "%ds_%dx%d_%d_%s_%d.yuv",
+                                        dumpFrmCnt, dim.width, dim.height, frame->frame_idx, misc,
+                                        mCameraId);
                             } else {
-                                snprintf(buf, sizeof(buf), "%ds_%dx%d_%d.yuv",
-                                        dumpFrmCnt, dim.width, dim.height, frame->frame_idx);
+                                snprintf(buf, sizeof(buf), "%ds_%dx%d_%d_%d.yuv",
+                                        dumpFrmCnt, dim.width, dim.height, frame->frame_idx,
+                                        mCameraId);
                             }
                         }
                         break;
@@ -2811,32 +2830,34 @@ void QCamera2HardwareInterface::dumpFrameToFile(QCameraStream *stream,
                         {
                             stream->getFrameDimension(dim);
                             if (misc != NULL) {
-                                snprintf(buf, sizeof(buf), "%dir_%dx%d_%d_%s.yuv",
-                                        dumpFrmCnt, dim.width, dim.height, frame->frame_idx, misc);
+                                snprintf(buf, sizeof(buf), "%dir_%dx%d_%d_%s_%d.yuv",
+                                        dumpFrmCnt, dim.width, dim.height, frame->frame_idx, misc,
+                                        mCameraId);
                             } else {
-                                snprintf(buf, sizeof(buf), "%dir_%dx%d_%d.yuv",
-                                        dumpFrmCnt, dim.width, dim.height, frame->frame_idx);
+                                snprintf(buf, sizeof(buf), "%dir_%dx%d_%d_%d.yuv",
+                                        dumpFrmCnt, dim.width, dim.height, frame->frame_idx,
+                                        mCameraId);
                             }
                         }
                         break;
                     case QCAMERA_DUMP_FRM_VIDEO:
                         {
-                            snprintf(buf, sizeof(buf), "%dv_%dx%d_%d.yuv",
-                                    dumpFrmCnt, dim.width, dim.height, frame->frame_idx);
+                            snprintf(buf, sizeof(buf), "%dv_%dx%d_%d_%d.yuv",
+                                    dumpFrmCnt, dim.width, dim.height, frame->frame_idx, mCameraId);
                         }
                         break;
                     case QCAMERA_DUMP_FRM_RAW:
                         {
                             mParameters.getStreamDimension(CAM_STREAM_TYPE_RAW, dim);
-                            snprintf(buf, sizeof(buf), "%dr_%dx%d_%d.raw",
-                                    dumpFrmCnt, dim.width, dim.height, frame->frame_idx);
+                            snprintf(buf, sizeof(buf), "%dr_%dx%d_%d_%d.raw",
+                                    dumpFrmCnt, dim.width, dim.height, frame->frame_idx, mCameraId);
                         }
                         break;
                     case QCAMERA_DUMP_FRM_JPEG:
                         {
                             mParameters.getStreamDimension(CAM_STREAM_TYPE_SNAPSHOT, dim);
-                            snprintf(buf, sizeof(buf), "%dj_%dx%d_%d.yuv",
-                                    dumpFrmCnt, dim.width, dim.height, frame->frame_idx);
+                            snprintf(buf, sizeof(buf), "%dj_%dx%d_%d_%d.yuv",
+                                    dumpFrmCnt, dim.width, dim.height, frame->frame_idx, mCameraId);
                         }
                         break;
                     default:

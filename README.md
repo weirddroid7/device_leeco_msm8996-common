@@ -1,6 +1,4 @@
-Copyright (C) 2016 The CyanogenMod Project
+Copyright (C) 2017 - The LineageOS Project
 
-Copyright (C) 2017-2018 The LineageOS Project
-
-Common device configuration for msm8996 based LeEco devices
-===========================================================
+Common device tree for Xiaomi MSM8996 based devices
+==============
