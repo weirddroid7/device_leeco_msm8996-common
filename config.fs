@@ -13,9 +13,6 @@ value:2904
 [AID_VENDOR_ADPL_ODL]
 value:2905
 
-[AID_VENDOR_QRTR]
-value:2906
-
 [vendor/bin/hw/android.hardware.bluetooth@1.0-service-qti]
 mode: 0755
 user: AID_BLUETOOTH
@@ -74,7 +71,7 @@ caps: SETUID SETGID
 mode: 0755
 user:  AID_GPS
 group: AID_GPS
-caps: NET_BIND_SERVICE BLOCK_SUSPEND WAKE_ALARM
+caps: NET_BIND_SERVICE BLOCK_SUSPEND
 
 [vendor/bin/sensors.qti]
 mode: 0755
